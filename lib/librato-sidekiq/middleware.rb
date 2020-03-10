@@ -62,10 +62,16 @@ module Librato
         return result unless enabled
         # puts "#{worker_instance} #{queue}"
 
+        # From the docs (https://github.com/mperham/sidekiq/wiki/Job-Format):
+        # Note that enqueued_at isn't added to the payload for scheduled jobs.
+        # They get the enqueued_at field when they are pushed onto a queue.
+        enqueued_at = msg['enqueued_at'] || start_time
+        latency = (start_time - enqueued_at).to_f
+
         stats = ::Sidekiq::Stats.new
 
         Librato.group 'sidekiq' do |sidekiq|
-          track sidekiq, stats, worker_instance, msg, queue, elapsed
+          track sidekiq, stats, worker_instance, msg, queue, elapsed, latency
         end
 
         result
@@ -73,12 +79,13 @@ module Librato
 
       private
 
-      def track(tracking_group, stats, worker_instance, msg, queue, elapsed)
+      def track(tracking_group, stats, worker_instance, msg, queue, elapsed, latency)
         submit_general_stats tracking_group, stats
         return unless allowed_to_submit queue, worker_instance
         # puts "doing Librato insert"
         tracking_group.group queue.to_s do |q|
           q.increment 'processed'
+          q.timing 'latency', latency
           q.timing 'time', elapsed
           q.measure 'enqueued', stats.queues[queue].to_i
 
@@ -86,6 +93,7 @@ module Librato
           # a class name with slashes. remove them in favor of underscores
           q.group msg['class'].underscore.gsub('/', '_') do |w|
             w.increment 'processed'
+            w.timing 'latency', latency
             w.timing 'time', elapsed
           end
         end
